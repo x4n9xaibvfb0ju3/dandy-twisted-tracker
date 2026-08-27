@@ -29,7 +29,7 @@ jobs:
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
           SEND_TEST: "0"
         run: |
-          RUN_ONCE=1 python dandy-twisted-tracker/twisted_tracker.py
+          RUN_ONCE=1 python twisted_tracker.py
 
       - name: Persist notification state
         run: |
