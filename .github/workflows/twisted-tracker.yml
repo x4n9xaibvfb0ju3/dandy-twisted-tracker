@@ -2,9 +2,8 @@ name: Dandy's World Twisted Tracker
 
 on:
   schedule:
-    # GitHub Actions cannot follow the countdown while asleep, so check every
-    # five minutes and let the persisted state suppress duplicate messages.
-    - cron: "3-59/5 * * * *"
+    # GitHub cron uses UTC. 00:00 UTC is 7:00 PM fixed EST.
+    - cron: "0 0 * * *"
   workflow_dispatch: # lets you run it manually from the Actions tab
 
 permissions:
