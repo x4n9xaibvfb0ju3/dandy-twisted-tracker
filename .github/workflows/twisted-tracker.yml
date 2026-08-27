@@ -2,8 +2,8 @@ name: Dandy's World Twisted Tracker
 
 on:
   schedule:
-    # GitHub cron uses UTC. 00:00 UTC is 7:00 PM fixed EST.
-    - cron: "0 0 * * *"
+    # GitHub cron uses UTC. 01:00 UTC is 8:00 PM fixed EST.
+    - cron: "0 1 * * *"
   workflow_dispatch: # lets you run it manually from the Actions tab
 
 permissions:

@@ -56,7 +56,7 @@ need to force a test notification.
 For continuous monitoring, omit `RUN_ONCE`; it follows the next-change
 countdown published on the wiki instead of using a fixed hourly schedule.
 
-The GitHub Actions workflow checks once daily at 00:00 UTC (7:00 PM fixed EST).
+The GitHub Actions workflow checks once daily at 01:00 UTC (8:00 PM fixed EST).
 Its scheduled runs require the repository secret and variables above, plus permission to
 push the small `last_notified.txt` state file back to the repository. GitHub
 Actions does not send the startup test; use the local launcher once to test the
