@@ -1,0 +1,46 @@
+name: Dandy's World Twisted Tracker
+
+on:
+  schedule:
+    # Every hour. The board rotates once per 24h at 12:00 AM GMT,
+    # so hourly polling catches the new Twisted within ~1 hour.
+    - cron: "0 * * * *"
+  workflow_dispatch: # lets you run it manually from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  check-board:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore notification state
+        uses: actions/cache@v4
+        id: state-cache
+        with:
+          path: last_notified.txt
+          key: twisted-tracker-state
+
+      - name: Run tracker
+        env:
+          TARGET_TWISTED: ${{ vars.TARGET_TWISTED }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
+        run: |
+          python dandy-twisted-tracker/twisted_tracker.py || true
+
+      - name: Save notification state
+        uses: actions/cache@v4
+        with:
+          path: last_notified.txt
+          key: twisted-tracker-state
+          restore-keys: |
+            twisted-tracker-state
