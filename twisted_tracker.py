@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Dandy's World Daily Twisted Board tracker.
 
-Polls the Miraheze wiki for the current Daily Twisted Board and posts a
-Discord webhook when the featured Twisted matches your target(s).
+Polls the Fandom wiki for the current Daily Twisted Board and posts a Discord
+webhook when the board changes. Set TARGET_TWISTED to a name to only notify
+when that Twisted is featured, or leave it as ALL to notify for every change.
 
 Configure via environment variables (set in the GitHub workflow):
     TARGET_TWISTED   - a specific Twisted name, a comma-separated list of names,
@@ -10,7 +11,8 @@ Configure via environment variables (set in the GitHub workflow):
                        Matching is case-insensitive and ignores the word "Twisted".
     DISCORD_WEBHOOK  - your Discord webhook URL.
     DISCORD_MENTION  - optional. Text to prefix the message, e.g. "<@&123456789>" or
-                       "<@123456789>" to actually ping you. Defaults to no mention.
+                        "<@123456789>" to actually ping you. Defaults to no mention.
+    The continuous monitor sleeps until the next change shown by the wiki.
 """
 
 import os
@@ -19,9 +21,13 @@ import sys
 import html
 import urllib.request
 import json
+import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote
 
-WIKI_URL = "https://dandysworld.miraheze.org/wiki/Daily_Twisted_Board"
-STATE_FILE = "last_notified.txt"
+WIKI_URL = "https://dandys-world-robloxhorror.fandom.com/wiki/Daily_Twisted_Board"
+WIKI_API_URL = "https://dandys-world-robloxhorror.fandom.com/api.php?action=parse&page=Daily_Twisted_Board&prop=text&format=json&formatversion=2"
+STATE_FILE = os.environ.get("STATE_FILE", "last_notified.txt")
 
 # Names of Twisteds that can appear on the board, for reference/validation.
 KNOWN_TWISTEDS = [
@@ -34,26 +40,43 @@ KNOWN_TWISTEDS = [
 
 
 def fetch_wiki_page() -> str:
-    req = urllib.request.Request(WIKI_URL, headers={"User-Agent": "dandy-twisted-tracker/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    headers = {
+        "User-Agent": "dandy-twisted-tracker/1.0 (personal notifier)",
+        "Accept": "text/html,application/xhtml+xml,application/json",
+    }
+    try:
+        req = urllib.request.Request(WIKI_URL, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError:
+        # Fandom may reject the article route while still allowing its API.
+        req = urllib.request.Request(WIKI_API_URL, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return data["parse"]["text"]
 
 
 def parse_featured(page: str):
-    """Return (twisted_name, until_text) or None if not found."""
-    # Strip HTML tags/entities so we can read the sentence as plain text:
-    #   Twisted Razzle & Dazzle is more likely to spawn until August 25th, 7:00 PM EST.
-    text = re.sub(r"<[^>]+>", " ", page)
-    text = html.unescape(text)
-    m = re.search(
-        r"Twisted\s+(.+?)\s+is more likely to spawn until\s+([^.,]+)",
-        text,
-        re.IGNORECASE,
-    )
-    if not m:
+    """Return (twisted_name, next_change_text) from the Fandom page."""
+    # The live page identifies the board with a Twisted_* wiki link. Limit the
+    # search to the paragraph after "Currently" so gallery links are ignored.
+    current = re.search(r"currently.{0,5000}", page, re.IGNORECASE | re.DOTALL)
+    if not current:
         return None
-    name = re.sub(r"\s+", " ", m.group(1)).strip()
-    until = re.sub(r"\s+", " ", m.group(2)).strip()
+
+    section = current.group(0)
+    link = re.search(r'href=["\']/wiki/(Twisted_[^"\'?#]+)', section, re.IGNORECASE)
+    if not link:
+        return None
+
+    slug = unquote(link.group(1))
+    name = re.sub(r"^Twisted_", "", slug, flags=re.IGNORECASE).replace("_", " ")
+    name = html.unescape(re.sub(r"\s+", " ", name)).strip()
+
+    clean_section = html.unescape(re.sub(r"<[^>]+>", " ", section))
+    clean_section = " ".join(clean_section.split())
+    until_match = re.search(r"It will be\s+(.+?)\s+until", clean_section, re.IGNORECASE)
+    until = " ".join(until_match.group(1).split()) if until_match else "the next daily reset"
     return name, until
 
 
@@ -99,6 +122,19 @@ def post_webhook(webhook_url: str, content: str) -> None:
             raise RuntimeError(f"webhook returned HTTP {resp.status}")
 
 
+def seconds_until_change(until: str) -> float | None:
+    """Return seconds until the last UTC timestamp in the countdown text."""
+    dates = re.findall(
+        r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+\d{1,2}\s+\d{4}\s+\d{1,2}:\d{2}\s+UTC",
+        until,
+    )
+    if not dates:
+        return None
+    change = datetime.strptime(dates[-1], "%B %d %Y %H:%M UTC").replace(tzinfo=timezone.utc)
+    return (change - datetime.now(timezone.utc)).total_seconds()
+
+
 def main() -> None:
     target = os.environ.get("TARGET_TWISTED", "ALL")
     webhook = os.environ.get("DISCORD_WEBHOOK", "")
@@ -108,45 +144,60 @@ def main() -> None:
         print("ERROR: DISCORD_WEBHOOK not set")
         sys.exit(1)
 
-    try:
-        page = fetch_wiki_page()
-    except Exception as e:
-        print(f"WARN: failed to fetch wiki page: {e}")
-        sys.exit(0)
+    once = os.environ.get("RUN_ONCE", "0").lower() in ("1", "true", "yes")
 
-    parsed = parse_featured(page)
-    if not parsed:
-        print("WARN: could not parse the current Twisted from the wiki page")
-        sys.exit(0)
+    if os.environ.get("SEND_TEST", "1").lower() in ("1", "true", "yes"):
+        try:
+            prefix = f"{mention} " if mention else ""
+            post_webhook(webhook, f"{prefix}Dandy's World Twisted tracker is online and the webhook is working.")
+            print("Webhook test sent successfully.")
+        except Exception as e:
+            print(f"ERROR: webhook test failed: {e}")
+            sys.exit(1)
 
-    twisted_name, until = parsed
-    print(f"Current board: Twisted {twisted_name} until {until}")
+    while True:
+        try:
+            page = fetch_wiki_page()
+            parsed = parse_featured(page)
+            if not parsed:
+                raise RuntimeError("could not parse the current Twisted")
+            twisted_name, until = parsed
+            print(f"Current board: Twisted {twisted_name}; changes {until}")
 
-    if not matches_target(twisted_name, target):
-        print(f"Target is {target!r}; no match. No webhook sent.")
-        return
+            key = normalize(twisted_name)
+            previous = load_last_notified()
+            if key != previous and matches_target(twisted_name, target):
+                prefix = f"{mention} " if mention else ""
+                content = (
+                    f"{prefix}**Twisted {twisted_name}** is now on the Daily Twisted Board "
+                    f"and more likely to spawn! The board changes **{until}**."
+                )
+                post_webhook(webhook, content)
+                save_last_notified(key)
+                print(f"Webhook sent for Twisted {twisted_name}.")
+            elif key == previous:
+                print("No board change; skipping webhook.")
+            else:
+                print(f"Target is {target!r}; change does not match. No webhook sent.")
+                # Remember the board so a named target does not notify repeatedly
+                # during the same daily window.
+                save_last_notified(key)
+        except Exception as e:
+            print(f"WARN: {e}")
 
-    # Key on Twisted + expiry date so we only ping once per 24h window even
-    # if the workflow runs multiple times during the day.
-    key = f"{normalize(twisted_name)}|{until}".lower()
-    if key == load_last_notified():
-        print("Already notified for this Twisted/window. Skipping.")
-        return
+        if once:
+            return
 
-    prefix = f"{mention} " if mention else ""
-    content = (
-        f"{prefix}**Twisted {twisted_name}** is now on the Daily Twisted Board "
-        f"and more likely to spawn! Active until **{until}**."
-    )
-
-    try:
-        post_webhook(webhook, content)
-    except Exception as e:
-        print(f"ERROR: failed to post webhook: {e}")
-        sys.exit(1)
-
-    save_last_notified(key)
-    print(f"Webhook sent for Twisted {twisted_name}.")
+        delay = seconds_until_change(until)
+        if delay is None:
+            print("Countdown could not be read; checking again in 60 seconds.")
+            time.sleep(60)
+        else:
+            # Wake at the displayed reset time. A short retry loop handles
+            # wiki caching or a reset that occurs a few seconds late.
+            sleep_for = max(1, delay)
+            print(f"Next board check in {sleep_for:.0f} seconds.")
+            time.sleep(sleep_for)
 
 
 if __name__ == "__main__":

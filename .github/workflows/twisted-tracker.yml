@@ -2,13 +2,13 @@ name: Dandy's World Twisted Tracker
 
 on:
   schedule:
-    # Every hour. The board rotates once per 24h at 12:00 AM GMT,
-    # so hourly polling catches the new Twisted within ~1 hour.
-    - cron: "0 * * * *"
+    # GitHub Actions cannot follow the countdown while asleep, so check every
+    # five minutes and let the persisted state suppress duplicate messages.
+    - cron: "*/5 * * * *"
   workflow_dispatch: # lets you run it manually from the Actions tab
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check-board:
@@ -22,25 +22,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Restore notification state
-        uses: actions/cache@v4
-        id: state-cache
-        with:
-          path: last_notified.txt
-          key: twisted-tracker-state
-
       - name: Run tracker
         env:
           TARGET_TWISTED: ${{ vars.TARGET_TWISTED }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
+          SEND_TEST: "0"
         run: |
-          python dandy-twisted-tracker/twisted_tracker.py || true
+          RUN_ONCE=1 python dandy-twisted-tracker/twisted_tracker.py
 
-      - name: Save notification state
-        uses: actions/cache@v4
-        with:
-          path: last_notified.txt
-          key: twisted-tracker-state
-          restore-keys: |
-            twisted-tracker-state
+      - name: Persist notification state
+        run: |
+          if git diff --quiet -- last_notified.txt; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f last_notified.txt
+          git commit -m "chore: update twisted tracker state"
+          git push
