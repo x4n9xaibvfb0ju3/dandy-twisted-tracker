@@ -1,0 +1,28 @@
+name: Twisted Tracker Automation Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parsing-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send three test messages
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
+        run: |
+          for attempt in 1 2 3; do
+            payload=$(python -c 'import json, os; print(json.dumps({"content": os.environ.get("DISCORD_MENTION", "") + " Parsing"}))')
+            curl --fail-with-body --silent --show-error \
+              -X POST \
+              -H "Content-Type: application/json" \
+              --data "$payload" \
+              "$DISCORD_WEBHOOK"
+            if [ "$attempt" -lt 3 ]; then
+              sleep 300
+            fi
+          done
